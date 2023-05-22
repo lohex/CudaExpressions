@@ -15,14 +15,22 @@ class GPUExpression:
     '''
     operations = {sp.core.Number:1,sp.core.Symbol:2,sp.core.Add:3,sp.core.Mul:4,sp.core.Pow:5}
 
-    def __init__(self,expression:str,params_order=None):
+    def __init__(self,expression:str,params_order=[],variables_order=[]):
         '''
         Creates a tensor representation of symbolic expressions that can be evaluated parallel on the GPU.
+        
+        Args:
+            expression (str):
+                String defining the expression.
+            params_order (list of symbols):
+                List of parameters that are used in the expression  
+            variable_order (list of symbols) [optional]:
+                List of variables that are not provided in parameters
+
         '''
         self.base_expr = parse_expr(expression).simplify()
-        self.params = list(self.base_expr.atoms(sp.Symbol))
-        if type(params_order) != type(None):
-            self.setParameterOrder(params_order)
+        self.symbols = list(self.base_expr.atoms(sp.Symbol))
+        self.setParameterOrder(params_order,variables_order)
 
         self.command_chain = []
         self.parseSubexpr(self.base_expr)
@@ -49,12 +57,20 @@ class GPUExpression:
         Return:
             function handle
         """
-        numpy_single = sp.lambdify((self.params,),self.base_expr,'numpy')
+        if len(self.variables) == 0:
+            numpy_single = sp.lambdify((self.params,),self.base_expr,'numpy')
+        else:
+            numpy_single = sp.lambdify((self.params,self.variables),self.base_expr,'numpy')
+        
         if not on_array:
             return numpy_single
         else:
-            def numpy_array(in_array):
-                return np.array([numpy_single(r) for r in in_array])
+            if len(self.variables) == 0:
+                def numpy_array(parameters):
+                    return np.array([numpy_single(r) for r in parameters])
+            else:
+                def numpy_array(parameters,variables):
+                    return np.array([numpy_single(r,x) for r,x in zip(parameters,variables)])
             return numpy_array
             
     def parseSubexpr(self,subexpr):
@@ -70,7 +86,9 @@ class GPUExpression:
             return self.command_chain.index(as_leaf)
         
         elif isinstance(subexpr,sp.core.Symbol):
-            as_leaf = [2,self.params.index(subexpr),-1]
+            var_type = 1 if subexpr in self.params else 2
+            var_index = self.params.index(subexpr) if var_type == 1 else self.variables.index(subexpr)
+            as_leaf = [2,var_index,var_type]
             if not as_leaf in self.command_chain:
                 self.command_chain.append(as_leaf)
             return self.command_chain.index(as_leaf)
@@ -89,27 +107,37 @@ class GPUExpression:
             self.command_chain.append([self.operations[subexpr.func],id_a,id_b])
             return len(self.command_chain)-1
         
-    def setParameterOrder(self,parameters:list, allow_unused=True):
+    def setParameterOrder(self,parameters:list=[],variables:list=[],allow_unused=True):
         """
         Define the order in which parameters are provided to the function.
 
         Args:
             parameters (list of symbols): Symbols used in the expression in the right order.
         """
+        if len(parameters) == 0 and len(variables) == 0:
+            parameters = self.symbols
+        parameters = [sp.Symbol(str(s)) for s in parameters]
+        variables = [sp.Symbol(str(s)) for s in variables]
+
         if not allow_unused:
-            unexpected_params = [p for p in parameters if p not in self.params]
+            unexpected_params = [p for p in parameters + variables if p not in self.symbols]
             if unexpected_params:
                 unexpected = ', '.join([str(p) for p in unexpected_params])
-                raise Exception('Parameter(s) %s were not defined in the expression!'%unexpected)
-        
-        missing_params = [p for p in self.params if p not in parameters] 
+                raise Exception('Parameter(s) %s were not used in the expression!'%unexpected)
+
+        missing_params = [p for p in self.symbols if p not in parameters + variables] 
         if missing_params:
             missing = ', '.join([str(p) for p in missing_params])
             raise Exception('Parameter(s) %s were not listed in the provided ordering!'%missing)
         
-        self.params = parameters
+        double = [p for p in parameters if p in variables]
+        if double:
+            raise Exception('The symbol(s) %s can either be parameters OR variables but not both!'%str(double))
 
-    def eval(self,params,threadsperblock=1024):
+        self.params = parameters
+        self.variables = variables
+
+    def eval(self,params,variables=[],threadsperblock=1024):
         """
         Evaluate the expression on the GPU for a collection of parameters.
         
@@ -119,6 +147,9 @@ class GPUExpression:
             threadsperblock: Numberof threads used.
         """
         cuR = cuda.to_device(params)
+        if len(variables) == 0:
+            variables = np.zeros((params.shape[0],0))
+        cuX = cuda.to_device(variables)
         cuTensor = self.toTensor(on_device=True)
 
         buffer = np.zeros((params.shape[0],cuTensor.shape[0]))
@@ -127,29 +158,29 @@ class GPUExpression:
         cuResults = cuda.to_device(results)
 
         blockspergrid = (params.shape[0] + (threadsperblock - 1)) // threadsperblock
-        expression_kernel[blockspergrid,threadsperblock](cuR,cuTensor,cuBuffer,cuResults)
+        expression_kernel[blockspergrid,threadsperblock](cuR,cuX,cuTensor,cuBuffer,cuResults)
         cuda.synchronize()
         results = cuResults.copy_to_host()
         return results
 
 class GPUExpressionVector(GPUExpression):
-    def __init__(self,expression_list:list,params_order=None):
+    def __init__(self,expression_list:list,params_order:list=[],variables_order:list=[],optimize=True):
         self.out_dim = len(expression_list)
         self.base_expr = sp.Matrix(expression_list)
 
-        self.params = list(self.base_expr.atoms(sp.Symbol))
-        if type(params_order) != type(None):
-            self.setParameterOrder(params_order)
+        self.symbols = list(self.base_expr.atoms(sp.Symbol))
+        self.setParameterOrder(params_order,variables_order)
 
         self.parseExpressions(self.base_expr[:])
-        #self.shortenCommandChains()
+        if optimize:
+            self._shortenCommandChains()
         self.tensor = np.array(self.command_chain,dtype=np.int64)
 
     def parseExpressions(self,expression_list):
         self.command_chain = []
         for k,expr in enumerate(expression_list):
             if expr != 0:
-                gpu_expr = GPUExpression(str(expr),params_order=self.params)
+                gpu_expr = GPUExpression(str(expr),params_order=self.params,variables_order=self.variables)
                 # command_chain imported from GPUExpression objects assume starting at 0 => shift
                 self.command_chain += self._shiftBufferRef(gpu_expr.command_chain,len(self.command_chain))
                 self.command_chain.append([6,len(self.command_chain)-1,k])
@@ -208,7 +239,7 @@ class GPUExpressionVector(GPUExpression):
             if b==old:
                 self.command_chain[k][2] = new
 
-    def eval(self,params,threadsperblock=1024):
+    def eval(self,params,variables,threadsperblock=1024):
         """
         Evaluate the expression on the GPU for a collection of parameters.
         
@@ -218,6 +249,9 @@ class GPUExpressionVector(GPUExpression):
             threadsperblock: Numberof threads used.
         """
         cuR = cuda.to_device(params)
+        if len(variables) == 0:
+            variables = np.zeros((params.shape[0],0))
+        cuX = cuda.to_device(variables)
         cuTensor = self.toTensor(on_device=True)
 
         buffer = np.zeros((params.shape[0],cuTensor.shape[0]))
@@ -226,13 +260,13 @@ class GPUExpressionVector(GPUExpression):
         cuResults = cuda.to_device(results)
 
         blockspergrid = (params.shape[0] + (threadsperblock - 1)) // threadsperblock
-        vector_kernel[blockspergrid,threadsperblock](cuR,cuTensor,cuBuffer,cuResults)
+        vector_kernel[blockspergrid,threadsperblock](cuR,cuX,cuTensor,cuBuffer,cuResults)
         cuda.synchronize()
         results = cuResults.copy_to_host()
         return results
         
 @cuda.jit(device=True)
-def eval_inline(expression_tensor,parameters,buffer):
+def eval_inline(expression_tensor,parameters,variables,buffer):
     """
     Evaluate the symbolic expression represented by expression_tensor using the defined parameters.
 
@@ -249,8 +283,10 @@ def eval_inline(expression_tensor,parameters,buffer):
     for k,(com,a,b) in enumerate(expression_tensor):
         if com == 1:
             buffer[k] = expression_tensor[k,1]
-        elif com == 2:
+        elif com == 2 and b == 1:
             buffer[k] = parameters[int(a)]
+        elif com == 2 and b == 2:
+            buffer[k] = variables[int(a)]
         elif com == 3:
             buffer[k] = buffer[int(a)] + buffer[int(b)]
         elif com == 4:
@@ -261,16 +297,16 @@ def eval_inline(expression_tensor,parameters,buffer):
     return buffer[-1]
 
 @cuda.jit
-def expression_kernel(params,expression_tensor,eval_buffer,results):
+def expression_kernel(params,variables,expression_tensor,eval_buffer,results):
     """
     Generic kernel calling the inline function. This function is used by the eval() method of the GPUExpression class.
     """
     i = cuda.grid(1)
     if i < params.shape[0]:
-         results[i] = eval_inline(expression_tensor,params[i],eval_buffer[i])
+         results[i] = eval_inline(expression_tensor,params[i],variables[i],eval_buffer[i])
 
 @cuda.jit(device=True)
-def eval_vector_inline(expression_tensor,parameters,buffer,result_vector):
+def eval_vector_inline(expression_tensor,parameters,variables,buffer,result_vector):
     """
     Evaluate the symbolic expression represented by expression_tensor using the defined parameters.
 
@@ -291,8 +327,10 @@ def eval_vector_inline(expression_tensor,parameters,buffer,result_vector):
     for k,(com,a,b) in enumerate(expression_tensor):
         if com == 1:
             buffer[k] = expression_tensor[k,1]
-        elif com == 2:
+        elif com == 2 and b == 1:
             buffer[k] = parameters[int(a)]
+        elif com == 2 and b == 2:
+            buffer[k] = variables[int(a)]
         elif com == 3:
             buffer[k] = buffer[int(a)] + buffer[int(b)]
         elif com == 4:
@@ -303,10 +341,10 @@ def eval_vector_inline(expression_tensor,parameters,buffer,result_vector):
             result_vector[int(b)] = buffer[int(a)]
         
 @cuda.jit
-def vector_kernel(params,expression_tensor,eval_buffer,results):
+def vector_kernel(params,variables,expression_tensor,eval_buffer,results):
     """
     Generic kernel calling the inline function. This function is used by the eval() method of the GPUExpression class.
     """
     i = cuda.grid(1)
     if i < params.shape[0]:
-        eval_vector_inline(expression_tensor,params[i],eval_buffer[i],results[i])
+        eval_vector_inline(expression_tensor,params[i],variables[i],eval_buffer[i],results[i])
