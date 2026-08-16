@@ -113,7 +113,3 @@ class ExpressionVector:
 
     def eval(self, params, variables=None, threadsperblock: int = 256):
         return self.evaluate(params, variables, threads_per_block=threadsperblock)
-
-
-GPUExpression = Expression
-GPUExpressionVector = ExpressionVector
