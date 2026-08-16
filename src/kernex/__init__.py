@@ -1,20 +1,15 @@
-"""Kernex: runtime symbolic expressions for CUDA kernels."""
-
-from .cuda import eval_inline, eval_vector_inline
+"""Kernex: host-prepared mathematical runtime objects for CUDA kernels."""
 from .expression import Expression, ExpressionVector, GPUExpression, GPUExpressionVector
-from .ir import ExpressionIR, Instruction, OpCode, SymbolKind
+from .spline import Extrapolation, GPUSpline, GPUSplineVector, Spline, SplineCollection
 
 __all__ = [
     "Expression",
     "ExpressionVector",
+    "Spline",
+    "SplineCollection",
+    "Extrapolation",
     "GPUExpression",
     "GPUExpressionVector",
-    "ExpressionIR",
-    "Instruction",
-    "OpCode",
-    "SymbolKind",
-    "eval_inline",
-    "eval_vector_inline",
+    "GPUSpline",
+    "GPUSplineVector",
 ]
-
-__version__ = "0.1.0"
