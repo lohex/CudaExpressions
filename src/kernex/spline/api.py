@@ -48,7 +48,3 @@ class SplineCollection:
 
     def __len__(self):
         return len(self.splines)
-
-
-GPUSpline = Spline
-GPUSplineVector = SplineCollection
