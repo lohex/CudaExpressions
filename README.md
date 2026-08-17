@@ -18,7 +18,7 @@ This is useful when a mathematical object is part of a larger GPU simulation or 
 
 Kernex currently provides two modules:
 
-* `kernex.expression`: symbolic expressions compiled to a compact integer intermediate representation (IR).
+* `kernex.expression`: symbolic expressions compiled to compact integer bytecode.
 * `kernex.spline`: natural cubic splines compiled to knots and local cubic polynomial coefficients.
 
 ## Installation
@@ -36,8 +36,6 @@ Kernex currently depends on NumPy, Numba and SymPy. SciPy is only used for numer
 ### Basic evaluation
 
 ```python
-import numpy as np
-
 from kernex import Expression
 
 expr = Expression(
@@ -46,19 +44,20 @@ expr = Expression(
     variable_order=["x"],
 )
 
-parameters = np.array([
+# Array-like inputs are normalized to float64 internally.
+parameters = [
     [2.0, 1.0],
     [3.0, 0.5],
-])
-variables = np.array([
+]
+variables = [
     [4.0],
     [2.0],
-])
+]
 
 result = expr.evaluate(parameters, variables)
 ```
 
-Expressions are parsed with SymPy and compiled to a compact instruction stream. The instruction stream can be transferred to the device once and interpreted repeatedly from CUDA device code.
+Expressions are parsed with SymPy and compiled to a compact instruction stream available as `expr.bytecode`. The bytecode can be transferred to the device once and interpreted repeatedly from CUDA device code.
 
 ### Inline expression evaluation
 
@@ -77,45 +76,46 @@ expr = Expression(
     variable_order=["x"],
 )
 
-device_ir = expr.to_device()
+device_bytecode = expr.to_device()
 
 parameters = np.array([[2.0, 1.0], [3.0, 0.5]])
 variables = np.array([[4.0], [2.0]])
 
 d_parameters = cuda.to_device(parameters)
 d_variables = cuda.to_device(variables)
-d_buffer = cuda.device_array((len(parameters), expr.tensor.shape[0]), dtype=np.float64)
+d_workspace = cuda.device_array(
+    (len(parameters), expr.bytecode.shape[0]), dtype=np.float64
+)
 d_result = cuda.device_array(len(parameters), dtype=np.float64)
 
 
 @cuda.jit
-def simulation_kernel(expression_ir, parameters, variables, buffer, result):
+def simulation_kernel(bytecode, parameters, variables, workspace, result):
     i = cuda.grid(1)
     if i < result.shape[0]:
         rate = evaluate_expression_inline(
-            expression_ir,
+            bytecode,
             parameters[i],
             variables[i],
-            buffer[i],
+            workspace[i],
         )
 
-        # The expression result can now be used directly as part of a larger
-        # device-side calculation without launching another kernel.
+        # Continue a larger device-side calculation without another kernel launch.
         result[i] = 2.0 * rate
 
 
 threads = 128
 blocks = (len(parameters) + threads - 1) // threads
 simulation_kernel[blocks, threads](
-    device_ir,
+    device_bytecode,
     d_parameters,
     d_variables,
-    d_buffer,
+    d_workspace,
     d_result,
 )
 ```
 
-The expression itself is runtime data. Different expression IRs can therefore be passed to the same compiled CUDA kernel.
+The expression itself is runtime data. Different expression bytecode can therefore be passed to the same compiled CUDA kernel. `workspace` is scratch memory for intermediate instruction results, not an output buffer.
 
 For vector-valued expressions, Kernex also provides:
 
@@ -182,7 +182,6 @@ def simulation_kernel(knots, coefficients, extrapolation, query, result):
             extrapolation,
         )
 
-        # Continue the surrounding GPU calculation using the interpolated value.
         result[i] = forcing * forcing
 
 
@@ -221,7 +220,6 @@ kernex/
 └── spline/
     ├── api.py
     ├── compile.py
-    ├── collection.py
     ├── numpy.py
     ├── cuda.py
     └── inline.py
@@ -235,6 +233,10 @@ from kernex.spline.inline import evaluate_spline_inline
 ```
 
 This naming convention is intended to remain unambiguous as further runtime objects are added.
+
+## Input and empty-batch behavior
+
+Expression batch inputs are accepted as array-like objects and normalized to `float64`. Empty batches return correctly shaped empty NumPy arrays without attempting a zero-block CUDA launch. Spline batch evaluation follows the same empty-input convention.
 
 ## Testing
 
