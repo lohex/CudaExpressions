@@ -3,7 +3,7 @@ from numba import cuda
 
 from kernex import Expression, ExpressionVector, Spline, SplineCollection
 from kernex.expression.inline import evaluate_expression_inline
-from kernex.spline.inline import evaluate_spline_inline, evaluate_spline_collection_inline
+from kernex.spline.inline import evaluate_spline_collection_inline, evaluate_spline_inline
 
 
 @cuda.jit
@@ -80,16 +80,13 @@ def test_spline_empty_batch():
 def test_spline_collection_inline_cuda_simulator():
     s1 = Spline(np.array([0.0, 1.0]), np.array([0.0, 2.0]))
     s2 = Spline(np.array([0.0, 1.0, 2.0]), np.array([1.0, 0.0, 1.0]))
-    packed = SplineCollection([s1, s2]).data
+    collection = SplineCollection([s1, s2])
+    device_data = collection.to_device()
     query = np.array([0.25, 1.5])
     indices = np.array([0, 1], dtype=np.int64)
     result = cuda.device_array(2, dtype=np.float64)
     collection_kernel[1, 32](
-        cuda.to_device(packed.knots),
-        cuda.to_device(packed.coefficients),
-        cuda.to_device(packed.knot_offsets),
-        cuda.to_device(packed.coefficient_offsets),
-        cuda.to_device(packed.extrapolations),
+        *device_data,
         cuda.to_device(indices),
         cuda.to_device(query),
         result,
