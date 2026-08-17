@@ -42,6 +42,16 @@ def to_device(data):
     return cuda.to_device(data.knots), cuda.to_device(data.coefficients), int(data.extrapolation)
 
 
+def to_device_collection(packed):
+    return (
+        cuda.to_device(packed.knots),
+        cuda.to_device(packed.coefficients),
+        cuda.to_device(packed.knot_offsets),
+        cuda.to_device(packed.coefficient_offsets),
+        cuda.to_device(packed.extrapolations),
+    )
+
+
 def evaluate(data, x, *, threads_per_block: int = 256):
     if threads_per_block <= 0:
         raise ValueError("threads_per_block must be positive")
@@ -80,17 +90,16 @@ def evaluate_collection(packed, spline_indices, x, *, threads_per_block: int = 2
     shape = query.shape
     indices = indices.reshape(-1)
     query = query.reshape(-1)
-    args = (
-        cuda.to_device(packed.knots),
-        cuda.to_device(packed.coefficients),
-        cuda.to_device(packed.knot_offsets),
-        cuda.to_device(packed.coefficient_offsets),
-        cuda.to_device(packed.extrapolations),
-        cuda.to_device(indices),
-        cuda.to_device(query),
-    )
+    device_data = to_device_collection(packed)
+    d_indices = cuda.to_device(indices)
+    d_query = cuda.to_device(query)
     d_result = cuda.device_array(query.shape[0], dtype=np.float64)
     blocks = (query.shape[0] + threads_per_block - 1) // threads_per_block
-    _collection_kernel[blocks, threads_per_block](*args, d_result)
+    _collection_kernel[blocks, threads_per_block](
+        *device_data,
+        d_indices,
+        d_query,
+        d_result,
+    )
     cuda.synchronize()
     return d_result.copy_to_host().reshape(shape)
