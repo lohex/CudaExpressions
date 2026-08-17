@@ -15,7 +15,7 @@ _SYMBOL_VARIABLE = int(SymbolKind.VARIABLE)
 
 
 @cuda.jit(device=True)
-def evaluate_expression_inline(expression_ir, parameters, variables, buffer):
+def evaluate_expression_inline(expression_ir, parameters, variables, workspace):
     """Evaluate one scalar expression from an existing CUDA kernel."""
     result = 0.0
     for index in range(expression_ir.shape[0]):
@@ -23,41 +23,43 @@ def evaluate_expression_inline(expression_ir, parameters, variables, buffer):
         arg1 = expression_ir[index, 1]
         arg2 = expression_ir[index, 2]
         if opcode == _OP_CONSTANT:
-            buffer[index] = arg1
+            workspace[index] = arg1
         elif opcode == _OP_SYMBOL and arg2 == _SYMBOL_PARAMETER:
-            buffer[index] = parameters[arg1]
+            workspace[index] = parameters[arg1]
         elif opcode == _OP_SYMBOL and arg2 == _SYMBOL_VARIABLE:
-            buffer[index] = variables[arg1]
+            workspace[index] = variables[arg1]
         elif opcode == _OP_ADD:
-            buffer[index] = buffer[arg1] + buffer[arg2]
+            workspace[index] = workspace[arg1] + workspace[arg2]
         elif opcode == _OP_MUL:
-            buffer[index] = buffer[arg1] * buffer[arg2]
+            workspace[index] = workspace[arg1] * workspace[arg2]
         elif opcode == _OP_POW:
-            buffer[index] = buffer[arg1] ** buffer[arg2]
+            workspace[index] = workspace[arg1] ** workspace[arg2]
         elif opcode == _OP_RETURN:
-            result = buffer[arg1]
-            buffer[index] = result
+            result = workspace[arg1]
+            workspace[index] = result
     return result
 
 
 @cuda.jit(device=True)
-def evaluate_expression_vector_inline(expression_ir, parameters, variables, buffer, result_vector):
+def evaluate_expression_vector_inline(
+    expression_ir, parameters, variables, workspace, result_vector
+):
     """Evaluate a vector expression from an existing CUDA kernel."""
     for index in range(expression_ir.shape[0]):
         opcode = expression_ir[index, 0]
         arg1 = expression_ir[index, 1]
         arg2 = expression_ir[index, 2]
         if opcode == _OP_CONSTANT:
-            buffer[index] = arg1
+            workspace[index] = arg1
         elif opcode == _OP_SYMBOL and arg2 == _SYMBOL_PARAMETER:
-            buffer[index] = parameters[arg1]
+            workspace[index] = parameters[arg1]
         elif opcode == _OP_SYMBOL and arg2 == _SYMBOL_VARIABLE:
-            buffer[index] = variables[arg1]
+            workspace[index] = variables[arg1]
         elif opcode == _OP_ADD:
-            buffer[index] = buffer[arg1] + buffer[arg2]
+            workspace[index] = workspace[arg1] + workspace[arg2]
         elif opcode == _OP_MUL:
-            buffer[index] = buffer[arg1] * buffer[arg2]
+            workspace[index] = workspace[arg1] * workspace[arg2]
         elif opcode == _OP_POW:
-            buffer[index] = buffer[arg1] ** buffer[arg2]
+            workspace[index] = workspace[arg1] ** workspace[arg2]
         elif opcode == _OP_STORE:
-            result_vector[arg2] = buffer[arg1]
+            result_vector[arg2] = workspace[arg1]
