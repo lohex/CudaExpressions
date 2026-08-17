@@ -76,6 +76,9 @@ class SplineCollection:
         self.splines = tuple(splines)
         self.data = _pack_splines([spline.data for spline in self.splines])
 
+    def to_device(self):
+        return cuda_backend.to_device_collection(self.data)
+
     def evaluate(self, spline_indices, x, *, threads_per_block: int = 256):
         return cuda_backend.evaluate_collection(
             self.data, spline_indices, x, threads_per_block=threads_per_block
